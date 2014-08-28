@@ -1,0 +1,466 @@
+#!/usr/bin/perl -w
+# brett.schellenberg@gmail.com
+# code sample for gofundme.com: http://www.gofundme.com/code-sample-devop
+#
+# task:
+# Using the log file provided above code us a tool that answers these questions:
+# - What are the number of requests served by day?
+# - What are the 3 most frequent UserAgents by day?
+# - Up to the challenge? What is the ratio of GET's to POST's by OS by day? 
+#
+# log file looks like this:
+#127.0.0.1 - - [01/Dec/2011:00:00:11 -0500] "GET / HTTP/1.0" 304 266 "-" "Sosospider+(+http://help.soso.com/webspider.htm)"
+#127.0.0.1 - - [01/Dec/2011:00:00:24 -0500] "GET /feed/rss2/ HTTP/1.0" 301 447 "-" "Feedfetcher-Google; (+http://www.google.com/feedfetcher.html; 1 subscribers; feed-id=12878631678486589417)"
+#127.0.0.1 - - [01/Dec/2011:00:00:25 -0500] "GET /feed/ HTTP/1.0" 304 189 "-" "Feedfetcher-Google; (+http://www.google.com/feedfetcher.html; 1 subscribers; feed-id=12878631678486589417)"
+#
+# which breaks down into:
+# clientIP identd(unused) HTTPuser processDate request serverStatusCode responseSize referer(sic) userAgent
+#
+
+#structure
+#%recordsByDate = (
+#	'2011/12/01' => {
+#		'OS' => {
+#			MAXVALUELENGTH => 8,
+#			ENTRIES => [
+#				{
+#					VALUE => 'Mac OS X',
+#					COUNT => 10,
+#					ROLLUPBY => {
+#						HTTPMETHOD => {
+#							MAXVALUELENGTH => 4,
+#							ENTRIES => [
+#								{
+#									VALUE => 'GET',
+#									COUNT => '7',
+#								},
+#								{
+#									VALUE => 'POST',
+#									COUNT => '3',
+#								}
+#							]
+#						}
+#					}
+#				},
+#				{ ... },
+#			],
+#		},
+#		'RECORDS' => [
+#			{
+#				'CLIENTIP' => '127.0.0.1',
+#				'REFERER' => 'http://whatever.com/'
+#				'OS' => 'Windows NT',
+#				...
+#			},
+#			{
+#				'CLIENTIP' => '127.0.0.1',
+#				'REFERER' => 'http://whatever.com/'
+#				'OS' => 'Windows NT',
+#				...
+#			},
+#		],
+#	},
+#	'2011/12/02' => { ... },
+#	'_UNPARSED_' => { ... },
+#);
+
+
+use strict;
+use Text::CSV;
+use Getopt::Long;
+use UAParser;
+
+my $rollup = "";
+my $limit = "0,0";
+my $percent = 0;
+my $indented = 0;
+my $includeUnparsed = 0;
+my $skipUnknownOS = 0;
+my $verbose = 0;
+my $help = 0;
+
+GetOptions(
+	"rollup=s" => \$rollup,
+	"limit=s" => \$limit,
+	"percentage" => \$percent, #it's called percent, but accept '--percentage' if the user mindlessly autocompletes it
+	"indented" => \$indented,
+	"unparsed" => \$includeUnparsed,
+	"skipunknownOS" => \$skipUnknownOS,
+	"verbose" => \$verbose,
+	"help" => \$help,
+) or usage();
+
+sub usage {
+	print STDERR qq{Usage: $0 <filename> [options]
+ Parse an apache log file and rollup results with output similar to uniq -c, for use with graph utility.
+
+ <filename>                   apache access log to parse. defaults to ./small-sample.log
+
+ --rollup=COLUMN1[,COLUMN2]   rollup requests by day, COLUMN1, and COLUMN2. COLUMN one or two comma-separated values:
+                              CLIENTIP, IDENTD, HTTPUSER, PROCESSDATE, REQUEST, SERVERSTATUSCODE, RESPONSESIZE, REFERER,
+                              USERAGENT, OS, OSNAME, OSVERSION, HTTPMETHOD, HTTPRESOURCE, HTTPVERSION
+
+ --limit=limit1[,limit2]      may be used to limit the amount of output. limit1 will limit COLUMN1. limit2 will limit
+                              COLUMN2. 0 means unlimited.
+
+ --indented                   suppress normal graph-friendly output, instead output as an indented tree. indent mode also
+                              prevents the truncation of long values which occurs in graph-friendly mode.
+
+ --percent                    report counts as percentages. this only operates on the innermost counts; category counts will
+                              not be affected.
+
+ --unparsed                   include _UNPARSED_ records in output. defaults to false.
+ --skipunknownOS              skip over records with unknown OS. these tend to be bots/spiders. defaults to false.
+ --verbose                    output extra information, like when a record fails to parse.
+
+ --help                       display this message
+
+typical usage cases:
+
+What are the number of requests served by day?
+$0 --indented
+
+What are the 3 most frequent UserAgents by day?
+$0 --rollup=USERAGENT --limit=3 --indented
+
+Show a graph of the 3 most frequent UserAgents by day.
+$0 --rollup=USERAGENT --limit=3 | graph
+
+What is the percentage of GET's and POST's by OS by day?
+$0 --rollup=OS,HTTPMETHOD --percent --indented
+
+Show a graph of OSNAME and OSVERSION usage by day (only for known OSes)
+$0 --rollup=OSNAME,OSVERSION --skipunknownOS | graph
+
+Or maybe you want to see the ridiculous multitude of USERAGENT strings spewed out by the same OS...
+$0 --rollup=OS,USERAGENT --skipunknownOS --indented
+
+
+};
+	exit;
+}
+
+usage() if $help;
+
+my %recordsByDate;
+my $logFile = $ARGV[0] || 'small-sample.log';
+
+my @columnWhitelist = qw(
+	CLIENTIP
+	IDENTD
+	HTTPUSER
+	REQUEST
+	SERVERSTATUSCODE
+	RESPONSESIZE
+	REFERER
+	USERAGENT
+
+	PROCESSDATE
+
+	OS
+	OSNAME
+	OSVERSION
+
+	HTTPMETHOD
+	HTTPRESOURCE
+	HTTPVERSION
+);
+
+my ($column1, $column2) = split ",", $rollup;
+die "$column1 is an unrecognized column name\n" if ($column1 && !grep{ $_ eq $column1 } @columnWhitelist);
+die "$column2 is an unrecognized column name\n" if ($column2 && !grep{ $_ eq $column2 } @columnWhitelist);
+
+my $parseOS = (($column1 && $column1 =~ /^OS/) || ($column2 && $column2 =~ /^OS/) || $skipUnknownOS);
+
+my ($limit1, $limit2) = split /,/, $limit;
+$limit1 ||= 0;
+$limit2 ||= 0;
+
+my $csv = Text::CSV->new ({
+	sep_char => " ",
+	quote_char => "\"",
+	escape_char => "\\",
+	allow_loose_escapes => 1,
+}) or die "Cannot use CSV: ".Text::CSV->error_diag ();
+
+my %months = (
+	Jan => '01',
+	Feb => '02',
+	Mar => '03',
+	Apr => '04',
+	May => '05',
+	Jun => '06',
+	Jul => '07',
+	Aug => '08',
+	Sep => '09',
+	Oct => '10',
+	Nov => '11',
+	Dec => '12',
+);
+
+
+print STDERR "processing log file $logFile...\n";
+
+#parse the logfile, creating the barebones data structure
+
+#%recordsByDate = (
+#	'2011/12/01' => {
+#		'RECORDS' => [
+#			{
+#				'CLIENTIP' => '127.0.0.1',
+#				'REFERER' => 'http://whatever.com/'
+#				'OS' => 'Windows NT',
+#				...
+#			},
+#			...
+#		],
+#	},
+#	'_UNPARSED_' => { ... },
+#);
+
+open my $fh, $logFile or die "Cannot open $logFile: $!";
+while ( my $row = $csv->getline( $fh ) ) {
+	my $record;
+
+	# apache's log file format:
+	# clientIP identd(unused) HTTPuser processDate request serverStatusCode responseSize referer(sic) userAgent
+
+	# these columns need no extra processing
+	$record->{CLIENTIP} = $row->[0];
+	$record->{IDENTD} = $row->[1];
+	$record->{HTTPUSER} = $row->[2];
+	$record->{REQUEST} = $row->[5];
+	$record->{SERVERSTATUSCODE} = $row->[6];
+	$record->{RESPONSESIZE} = $row->[7];
+	$record->{REFERER} = $row->[8];
+	$record->{USERAGENT} = $row->[9];
+
+	# date parsing: if date cannot be parsed, set it to "_UNPARSED_"
+	# since the date field is non-quoted and contains spaces, the CSV parser thinks it is two fields.
+	# we combine the two date fields back into one, then remove the surrounding brackets, then parse
+	#
+	# we use a very dumb date parser to save time. using DateTime::Format::Strptime added > 400% run time!
+	#
+	# [01/Dec/2011:00:02:31 -0500] parses to "2011-12-01"
+	my $date = "_UNPARSED_";
+	my $dateField = "$row->[3] $row->[4]";
+	$dateField =~ s/^\[(.+)\]$/$1/;
+
+	# try to parse the date
+	if ($dateField =~ /^(\d\d)\/([a-z]{3})\/(\d\d\d\d):(\d\d):(\d\d):(\d\d)/i ) {
+		if ($months{$2}) {
+			$date = "$3-$months{$2}-$1";
+		}
+	}
+
+	# date parse error occurred, only warn if $verbose
+	if ($verbose && $date eq '_UNPARSED_') {
+		print "failure to parse date '$dateField'. Adding to _UNPARSED_.\n";
+	}
+
+	$record->{PROCESSDATE} = $dateField;
+
+	# parse the user agent to get the OS (only if user requested one of these columns!)
+	if ($parseOS) {
+		my $osVersionRef = UAParser::getOSFromUserAgent($row->[9]);
+		$record->{OS} = "$osVersionRef->{NAME} $osVersionRef->{VERSION}";
+		$record->{OSNAME} = $osVersionRef->{NAME};
+		$record->{OSVERSION} = $osVersionRef->{VERSION};
+
+		# OS 'unknown' from getOSFromUserAgent is almost always a bot
+		# only warn user of 'unknown' OS if $verbose
+		if ($record->{OS} =~ /unknown/) {
+			print "unknown OS from user agent: $row->[9]\n" if $verbose;
+			next if $skipUnknownOS;
+		}
+	}
+
+	# parse the request field - simple split should suffice, but if it breaks, then use CSV splitting
+	($record->{HTTPMETHOD}, $record->{HTTPRESOURCE}, $record->{HTTPVERSION}) = split /\s/, $row->[5];
+
+
+	# $record has been created and represents one row from original log file. add it to the data structure
+	if ($recordsByDate{$date}->{RECORDS}) {
+		push $recordsByDate{$date}->{RECORDS}, $record;
+	}
+	else {
+		$recordsByDate{$date}->{RECORDS} = [$record];
+	}
+}
+
+# done parsing, clean up
+$csv->eof or $csv->error_diag();
+close $fh;
+
+# loop through each day in date order, building and then outputting the data structure
+foreach my $date (sort keys %recordsByDate) {
+	next if (!$includeUnparsed && $date eq "_UNPARSED_");
+
+	my $countByDate = @{$recordsByDate{$date}->{RECORDS}};
+
+	# if we're in rollup mode, we've got work to do building the data sctructure
+	# if we're not in rollup mode, the structure is simple and already ready for output
+	if ($rollup) {
+		my $counts = {};
+
+		foreach my $record (@{$recordsByDate{$date}->{RECORDS}}) {
+			$counts->{$record->{$column1}}->{COUNT}++;
+			$counts->{$record->{$column1}}->{SUB}->{$record->{$column2}}->{COUNT}++ if $column2;
+		}
+
+		my @array;
+		my @sortedKeys = sort {$counts->{$b}->{COUNT} <=> $counts->{$a}->{COUNT}} keys $counts;
+		my $maxValueLength = 0;
+		foreach my $key (@sortedKeys) {
+			$maxValueLength = length($key) if length($key) > $maxValueLength;
+
+			my $hashRef = {
+				VALUE => $key,
+				COUNT => $counts->{$key}->{COUNT},
+			};
+
+			my $rollupBy = {};
+			if ($column2) {
+				my $maxValue2Length = 0;
+				my @array2;
+				my @sortedKeys2 = sort {$counts->{$key}->{SUB}->{$b}->{COUNT} <=> $counts->{$key}->{SUB}->{$a}->{COUNT}} keys $counts->{$key}->{SUB};
+				foreach my $key2 (@sortedKeys2) {
+					$maxValue2Length = length($key2) if length($key2) > $maxValue2Length;
+					push @array2, {
+						VALUE => $key2,
+						COUNT => $counts->{$key}->{SUB}->{$key2}->{COUNT},
+					};
+				}
+
+				$rollupBy->{$column2}->{MAXVALUELENGTH} = $maxValue2Length;
+				$rollupBy->{$column2}->{ENTRIES} = \@array2;
+
+				$hashRef->{ROLLUPBY}->{$column2} = $rollupBy->{$column2};
+			}
+
+			push @array, $hashRef;
+		}
+
+		$recordsByDate{$date}->{$column1}->{ENTRIES} = \@array;
+		$recordsByDate{$date}->{$column1}->{MAXVALUELENGTH} = $maxValueLength;
+	}
+
+	# begin output
+	print "DATE: $date ($countByDate)\n";
+	#print $indented ? "DATE: $date ($countByDate)\n"
+	#: sprintf("%-6.6s $date\n", $countByDate);
+
+	#if we're not in rollup mode, we're done outputting here
+	#if we are in rollup mode, then continue
+	if ($rollup) {
+		my @column1Results = @{firstElements($recordsByDate{$date}->{$column1}->{ENTRIES}, $limit1)};
+		my $m1 = $recordsByDate{$date}->{$column1}->{MAXVALUELENGTH};
+		if ($m1 >= 55) {
+			$m1 = 55;
+		}
+
+		foreach my $column1Result (@column1Results) {
+			my $count1 = $column1Result->{COUNT};
+			my $count1Percent = "";
+			$count1Percent = percentize($count1, $countByDate);
+
+			my $truncColumn1Value = ellipsisTrunc($column1Result->{VALUE}, $m1);
+
+			#output column1 row
+			#
+			if ($column2) {
+				#this is not a leaf. don't show percent and don't make graphable.
+				if ($indented) {
+					print "    $column1: $column1Result->{VALUE} ($count1)\n";
+				}
+				# not sure if I like this or not
+				#elsif (!$percent) {
+					# printf("%-6.6s $date | %-${m1}s\n", $count1, $truncColumn1Value);
+				#}
+				else {
+					printf("$date | %-${m1}s ($count1)\n", $truncColumn1Value);
+				}
+			}
+			else {
+				#this is a leaf.
+				if ($indented) {
+					printf("    $column1: $column1Result->{VALUE} (%s)\n", $percent ? $count1Percent : $count1);
+				}
+				else {
+					printf("%-6.6s $date | %-${m1}s\n", $percent ? $count1Percent : $count1, $truncColumn1Value);
+				}
+			}
+
+			my $column1Total = $column1Result->{COUNT};
+
+			if ($column2) {
+				foreach my $rollupBy (keys $column1Result->{ROLLUPBY}) {
+					my @column2Results = @{firstElements($column1Result->{ROLLUPBY}->{$rollupBy}->{ENTRIES}, $limit2)};
+					#TODO impose limit earlier when building data structure so maxlength is actually max of limited items
+
+					my $m2 = $column1Result->{ROLLUPBY}->{$rollupBy}->{MAXVALUELENGTH};
+					$m2 = 55 if $m2 >= 55;
+
+					foreach my $column2Result (@column2Results) {
+						my $count2 = $percent ? percentize($column2Result->{COUNT}, $column1Total) : $column2Result->{COUNT};
+
+						my $truncColumn2Value = ellipsisTrunc($column2Result->{VALUE}, $m2);
+						print $indented ? "        $column2: $column2Result->{VALUE} ($count2)\n"
+										: sprintf("%-6.6s $date | %-${m1}s | %-${m2}s \n", $count2, $truncColumn1Value, $truncColumn2Value);
+
+					}
+				}
+			}
+		}
+		print "\n";
+	}
+}
+
+
+#helpers
+
+# ellipsisTrunc
+#
+sub ellipsisTrunc {
+	my ($string, $length) = @_;
+	$length = $length-3;
+
+	if (length($string) > $length+3) {
+		$string = sprintf("%.${length}s...", $string);
+	}
+
+	return $string;
+}
+
+# percentize
+# accepts a $number and a $total
+# returns a string representing the percentage that $number is of $total, with '%' at the end
+# precision of return value is two decimal places
+sub percentize {
+	my ($number, $total) = @_;
+
+	my $percentage = int(10000 * $number / $total) / 100;
+	$percentage = $percentage . '%';
+}
+
+# firstElements
+# accepts an arrayref and the $number of elements to return (0 means all)
+# returns an arrayref containing the first $number elements from the arrayref, or fewer if the array is too short.
+sub firstElements {
+	my $arrayref = shift @_;
+	my $number = shift @_;
+	my @return;
+
+	die "$arrayref not an arrayref\n" unless ref $arrayref eq 'ARRAY';
+
+	#$number == 0 is a no-op here. just return the original array.
+	return $arrayref if $number == 0;
+
+	foreach my $i (0..$number-1) {
+		if (defined $arrayref->[$i]) {
+			push @return, $arrayref->[$i];
+		}
+	}
+
+	return \@return;
+}
