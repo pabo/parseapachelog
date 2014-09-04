@@ -1,0 +1,57 @@
+#!/usr/bin/perl -w
+# brett.schellenberg@gmail.com
+#
+# creates a bar graph from the output of uniq -c
+#
+# sample usage: show a graph of the unique lines in a FILE:
+# cat FILE | sort | uniq -c | graph
+
+use strict;
+
+use Term::ReadKey;
+use POSIX qw(ceil);
+
+my ($screenwidth) = GetTerminalSize();
+
+# need to loop through the data once before output in order to scale the graph so the largest bar will be 100% of screen width
+my $data;
+my $maxvalue = 0;
+my $maxlabellength = 0;
+while (<>) {
+	my ($displayvalue, $valueunit, $label, $plaintext) = (0, "", "", "");
+	if (/^\s*([0-9.]+)(\%?)\s+(.+)/) {
+		($displayvalue, $valueunit, $label) = ($1, $2, $3);
+	}
+	else {
+		$plaintext = $_;
+	}
+
+	my $value = ceil($displayvalue);
+
+	push @$data, {
+		label => $label,
+		displayvalue => $displayvalue,
+		value => $value,
+		valueunit => $valueunit,
+		plaintext => $plaintext,
+	};
+
+	$maxvalue = $value if $value > $maxvalue;
+	$maxlabellength = length($label) if length($label) > $maxlabellength;
+}
+
+my $divisor = $maxvalue/($screenwidth-$maxlabellength-11);
+
+# once we have all that figured out, we can loop through and output
+foreach my $datum (@$data) {
+	#allow blank lines
+	if (!$datum->{value}) {
+		print "$datum->{plaintext}";
+		next;
+	}
+
+	printf("%-${maxlabellength}s: ", "$datum->{label}");
+	print ("x" x ceil($datum->{value}/$divisor));
+	print " ($datum->{displayvalue}$datum->{valueunit})";
+	print "\n";
+}

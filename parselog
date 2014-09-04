@@ -1,12 +1,14 @@
 #!/usr/bin/perl -w
 # brett.schellenberg@gmail.com
-# code sample for gofundme.com: http://www.gofundme.com/code-sample-devop
 #
-# task:
-# Using the log file provided above code us a tool that answers these questions:
-# - What are the number of requests served by day?
-# - What are the 3 most frequent UserAgents by day?
-# - Up to the challenge? What is the ratio of GET's to POST's by OS by day? 
+# Welcome to parselog, a command line utility for statistical reports on apache logs.
+# Use the --help option to display detailed usage information
+#
+# required perl modules
+# UAParser.pm      included  for pulling data out of a User Agent string
+# Getopt/Long.pm   CPAN      for parsing command line options
+# Text/CSV.pm      CPAN      CSV parsing
+# Text/CSV_XS.pm   CPAN      significantly speeds up CSV parsing
 #
 # log file looks like this:
 #127.0.0.1 - - [01/Dec/2011:00:00:11 -0500] "GET / HTTP/1.0" 304 266 "-" "Sosospider+(+http://help.soso.com/webspider.htm)"
@@ -64,10 +66,11 @@
 #	'_UNPARSED_' => { ... },
 #);
 
-
 use strict;
 use Text::CSV;
 use Getopt::Long;
+
+use lib "lib";
 use UAParser;
 
 my $rollup = "";
@@ -82,8 +85,8 @@ my $help = 0;
 GetOptions(
 	"rollup=s" => \$rollup,
 	"limit=s" => \$limit,
-	"percentage" => \$percent, #it's called percent, but accept '--percentage' if the user mindlessly autocompletes it
 	"indented" => \$indented,
+	"percentage" => \$percent, #it's called percent, but accept --percentage and --percent (and shorter)
 	"unparsed" => \$includeUnparsed,
 	"skipunknownOS" => \$skipUnknownOS,
 	"verbose" => \$verbose,
@@ -109,7 +112,7 @@ sub usage {
  --percent                    report counts as percentages. this only operates on the innermost counts; category counts will
                               not be affected.
 
- --unparsed                   include _UNPARSED_ records in output. defaults to false.
+ --unparsed                   include _UNPARSED_ records in output. these are usually from unparsed dates. defaults to false.
  --skipunknownOS              skip over records with unknown OS. these tend to be bots/spiders. defaults to false.
  --verbose                    output extra information, like when a record fails to parse.
 

@@ -1,10 +1,10 @@
 package UAParser;
 # brett.schellenberg@gmail.com
+#
 # perl 5 port of javascript component/user-agent-parser found at https://github.com/component/user-agent-parser
-#  - perl port of OS portion
+#  - perl port of OS parser
 #  - minor tweaks
 #  - added a few user agent regexes
-#
 #
 # License
 #
