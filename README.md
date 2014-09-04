@@ -9,7 +9,7 @@ Installation
 required perl modules
 
 Name              | Location  | Description
--------------------------------------------
+------------------|-----------|------------|
 `UAParser.pm`     | included  | perl5 port of existing library, for pulling data out of a User Agent string
 `Getopt/Long.pm`  | CPAN      | for parsing command line options
 `Text/CSV.pm`     | CPAN      | CSV parsing
@@ -27,7 +27,8 @@ POSIX. POSIX should be installed on most systems already and Term::ReadKey is av
 Usage
 =====
 Use the --help option to display detailed usage information
-`> parselog --help`
+
+    > parselog --help
 
 
 Copyright
