@@ -78,6 +78,8 @@ Use the --help option to display detailed usage information
 Examples
 ========
 
+Show a graph of the top 3 useragent strings by day.
+
     >parseapachelog pabo$ parselog --rollup=USERAGENT --limit=3 | graph
     processing log file small-sample.log...
     DATE: 2011-12-01 (2822)
@@ -95,6 +97,7 @@ Examples
     2011-12-03 | Mozilla/5.0 (compatible; Yahoo! Slurp; http://help.y...: xxxxxxxxxxxxxx (68)
     2011-12-03 | Mozilla/5.0 (compatible; Baiduspider/2.0; +http://ww...: xxxxxxxx (36)
 
+What is the percentage of GET/POST requests per day?
 
     >:parseapachelog pabo$ parselog --rollup=HTTPMETHOD --percent --indented
     processing log file small-sample.log...
